@@ -1,116 +1,338 @@
-# ⚡ CF-Server-Monitor-Pro (Serverless 探针增强版)
+# CF-Server-Monitor-Pro Serverless 探针增强版
 
-基于 Cloudflare Workers 和 D1 数据库构建的轻量级、零成本、高定制化的服务器探针大盘。
-完美复刻了商业级探针（如 Nezha）的核心体验，但无需额外部署任何服务端 VPS！完全白嫖 Cloudflare 的免费 Serverless 资源。
+基于 Cloudflare Workers 和 D1 数据库构建的轻量级服务器探针大盘。
+项目不需要额外部署服务端 VPS，Cloudflare Worker 负责页面、接口和数据写入，D1 负责保存节点状态与设置。
 
-## ✨ 核心特性
+## 核心特性
 
-### 🎨 极致的视觉与个性化体验
-- **5 大精美主题一键切换**：内置默认清爽白、暗黑极客、新粗野主义、动态毛玻璃、赛博朋克 5 种完全不同的 UI 风格。
-- **自定义背景图与全透明模式**：支持在后台直接上传本地图片（自动转为 Base64）或填写图片 URL。开启背景图后，所有卡片自动化身为绝美的“半透明毛玻璃”质感。
-- **国旗智能匹配**：依托 Cloudflare 全球网络，自动识别 VPS 归属地并渲染超清图片国旗。
+### 监控展示
 
-### 📊 专业级监控与大盘展示
-- **全局顶栏大盘**：直观展示服务器总数、在线/离线数、总计流量（入/出）以及全网实时网速。
-- **硬核双栈检测**：自动探测并高亮打标 VPS 的 **IPv4** 与 **IPv6** 网络连通性。
-- **商业级自定义徽章**：支持为每台机器单独设置**价格、到期时间（自动计算剩余天数）、带宽上限、流量配额**，并在前台以彩色徽章展示。
-- **精细化分组**：支持在后台为服务器设置组别，前台大盘将自动按分组进行优雅排版。
-- **实时详情图表**：点击任意节点卡片，即可查看基于 Chart.js 的 CPU、内存、磁盘、进程数、TCP/UDP 连接数及双向网速的实时跳动折线图以及三网延迟监控（来自https://zstaticcdn.com/nodes ）。
-- **月度流量重置**：内置流量增量累加机制，支持开启每月 1 号自动重置统计，无惧被控端 VPS 重启导致的数据清零。
+- 多节点服务器大盘，展示服务器总数、在线/离线数、总流量和实时网速。
+- 支持 CPU、内存、磁盘、负载、进程数、TCP/UDP 连接数、系统版本、CPU 型号等指标。
+- 支持 IPv4/IPv6 连通性检测。
+- 支持国内三网和字节节点延迟检测。
+- 支持按分组展示节点。
+- 支持价格、到期时间、带宽、流量配额等自定义信息。
+- 支持月度流量统计，每月 1 号自动重置。
 
-### 🛡️ 隐私与安全控制
-- **一键私密模式**：吃灰神机不想公开？在后台取消勾选“公开访问”，前台访客必须输入 admin 及密钥方可查看你的专属大盘。
-- **模块化展示开关**：价格、到期时间、带宽、流量等敏感信息，可在后台一键控制是否在前台显示。
+### 安全增强
 
-### 🚀 极简部署与高精度采集
-- **底层精准算法**：抛弃传统不稳定的 `top` 命令，采用 Linux 内核级 `/proc/stat` 计算 CPU 时钟差值，数据跳动精准顺滑。
-- **傻瓜式一键安装**：后台自动生成被控端 Bash 一键安装命令，自动注册 Systemd 守护进程。
+- 前台默认不公开，可通过环境变量 `IS_PUBLIC` 控制。
+- 后台路径可通过环境变量 `ADMIN_PATH` 自定义，不再固定暴露 `/admin`。
+- 前台页面不再显示后台入口按钮，避免公开后台路径。
+- 每台服务器使用独立上报密钥 `report_secret`，不再共用 `API_SECRET`。
+- `API_SECRET` 只用于后台 Basic Auth 登录。
+- `/api/server` 不再返回完整数据库字段，只返回详情页必要字段。
+- 动态写入 HTML 的字段已做转义处理，降低 XSS 风险。
 
----
-## 📸 界面预览
+### 安装与兼容性
 
-### 1. 前台多节点大盘与全局统计
-<img width="3994" height="1830" alt="image" src="https://github.com/user-attachments/assets/e993f66e-7d3f-4481-ab02-e37edb63a7a1" />
+- 后台自动生成每台服务器的安装命令。
+- 后台自动生成卸载命令。
+- Linux Agent 默认每 30 秒上报一次，降低 Worker 和 D1 免费额度消耗。
+- 支持 systemd 系统。
+- 支持 Alpine/OpenRC 系统。
+- Alpine 缺少依赖时会明确提示安装依赖，不再假提示安装成功。
 
+## Cloudflare 免费额度参考
 
-### 2. 单节点实时性能折线图
-<img width="3989" height="1830" alt="image" src="https://github.com/user-attachments/assets/7eebc87c-a5aa-4620-a182-f4200fdaebca" />
+### Workers Free
 
+- 请求数：100,000 次/天。
+- CPU 时间：10 ms/请求。
+- 内存：128 MB。
+- 环境变量：64 个/Worker。
 
-### 3. 后台管理与全局设置
-<img width="3984" height="1830" alt="image" src="https://github.com/user-attachments/assets/cd14d981-6ace-4d0c-97e8-534a177306ea" />
+### D1 Free
 
+- 数据库数量：10 个/账号。
+- 单库大小：500 MB。
+- 账号总存储：5 GB。
+- 读取：5,000,000 行/天。
+- 写入：100,000 行/天。
 
----
+当前 Agent 上报间隔为 30 秒。
 
-## 🛠️ 部署指南
+估算消耗：
 
-### 第一步：创建 Cloudflare D1 数据库
-1. 登录 Cloudflare 控制台，进入 **Workers & Pages** -> **D1 SQL Database**。
-2. 创建一个名为 `probe-db` 的数据库。
-3. 数据库热创建与自动迁移,只需创建D1数据库即可
+| 节点数量 | Worker 请求/天 | D1 写入/天 |
+| --- | ---: | ---: |
+| 1 台 | 2,880 | 2,880 |
+| 5 台 | 14,400 | 14,400 |
+| 10 台 | 28,800 | 28,800 |
+
+10 台以内使用 30 秒上报间隔，通常低于 Cloudflare 免费额度。
+
+## 部署指南
+
+### 1. 创建 D1 数据库
+
+1. 登录 Cloudflare 控制台。
+2. 进入 `Workers & Pages`。
+3. 打开 `D1 SQL Database`。
+4. 创建一个数据库，例如 `probe-db`。
+
+脚本内置自动建表和自动迁移逻辑，只需要先创建并绑定 D1 数据库即可。
+
+### 2. 创建 Worker
+
+1. 在 `Workers & Pages` 中创建新的 Worker。
+2. 进入该 Worker 的设置页面。
+3. 打开 `Variables and Secrets`。
+4. 绑定 D1 数据库。
+
+D1 绑定配置：
+
+| 类型 | 名称 | 值 |
+| --- | --- | --- |
+| D1 数据库绑定 | `DB` | 选择你的 D1 数据库 |
+
+### 3. 设置环境变量
+
+必填变量：
+
+| 变量名 | 说明 |
+| --- | --- |
+| `API_SECRET` | 后台 Basic Auth 密码 |
+
+建议变量：
+
+| 变量名 | 示例 | 说明 |
+| --- | --- | --- |
+| `IS_PUBLIC` | `false` | 是否公开前台大盘。建议设为 `false` |
+| `ADMIN_PATH` | `/my-secure-admin` | 后台路径。也支持不带 `/`，例如 `my-secure-admin` |
+
+推荐配置：
+
+```text
+API_SECRET=一串强随机密码
+IS_PUBLIC=false
+ADMIN_PATH=/my-secure-admin
 ```
 
+路径规则：
 
-### 第二步：创建并配置 Cloudflare Worker
-1. 在 **Workers & Pages** 中创建一个新的 Worker。
-2. 进入该 Worker 的 **Settings (设置)** -> **Variables (变量与机密)**：
-   - **绑定 D1 数据库**：变量名填 `DB`，选择你刚才创建的 `probe-db`。
-   - **设置后台密码**：添加环境变量 `API_SECRET`，值为你自定义的管理后台登录密码（类型选择“文本”或“机密”均可）。
+| `ADMIN_PATH` | 后台页面 | 后台 API | 安装脚本 |
+| --- | --- | --- | --- |
+| `/my-secure-admin` | `/my-secure-admin` | `/my-secure-admin/api` | `/my-secure-admin/install.sh` |
+| `my-secure-admin` | `/my-secure-admin` | `/my-secure-admin/api` | `/my-secure-admin/install.sh` |
 
-### 第三步：部署代码
-1. 返回 Worker 的代码编辑页面（Edit Code）。
-2. 将本项目中的 `worker.js` 代码全部复制并覆盖进去。
-3. 点击 **Deploy (部署)**。
+`ADMIN_PATH` 不建议继续使用默认值 `/admin`。
 
----
+### 4. 部署代码
 
-## 💻 使用说明
+1. 打开 Worker 的代码编辑页面。
+2. 将 `10台VPS以内选这个已更新三网延迟.js` 的内容复制进去。
+3. 点击部署。
+4. 访问你设置的后台路径。
 
-1. **访问后台**：在浏览器访问 `https://你的Worker域名/admin`。
-2. **登录认证**：弹出的身份验证中，用户名为 `admin`，密码为你设置的 `API_SECRET` 的值。
-3. **添加节点**：在后台输入节点名称并添加，你可以点击“✏️ 编辑”来设置分组、价格、到期日等高阶信息。
-4. **安装探针**：点击绿色按钮“复制命令”，登录你的被控端 VPS 终端，粘贴并回车执行。
-5. **定制面板**：在后台最上方的“🛠️ 全局设置”中，你可以修改网站标题，并自由开关首页的各种元素显示。
+## 使用说明
 
-  https://imgapi.cn/api.php?fl=dongman&=4k   api接口可实现背景图片自动轮换   
-  
+### 访问后台
 
-##如何使用电报机器人通知：
+如果设置：
 
-    获取 Token：在 Telegram 找 @BotFather 创建机器人并拿到 Token。
+```text
+ADMIN_PATH=/my-secure-admin
+```
 
-    获取 Chat ID：在 Telegram 找 @userinfobot 发条消息，获取你的 ID。
+后台地址就是：
 
-    配置：
+```text
+https://你的Worker域名/my-secure-admin
+```
 
-        登录你的探针后台 /admin。
+登录信息：
 
-        在 Telegram 离线告警设置 区域，填入 Token 和 Chat ID。
+| 字段 | 值 |
+| --- | --- |
+| 用户名 | `admin` |
+| 密码 | `API_SECRET` 的值 |
 
-        将“开启通知”设为 启用告警。
+### 添加节点
 
-        点击 保存全局设置。
+1. 登录后台。
+2. 输入节点名称。
+3. 点击添加新服务器。
+4. 后台会自动为该节点生成独立上报密钥。
+5. 复制该节点的安装命令。
+6. 登录 VPS 后执行安装命令。
 
-    测试：如果你关掉一台 VPS 的 Agent，大约 2-3 分钟内，你的 Telegram 就会收到该节点的离线报警信息。当 Agent 重新启动，也会收到恢复通知。
+### 安装探针
 
-注意事项：
+后台会为每台服务器生成专属安装命令，格式类似：
 
-    离线判断标准：代码中设定为 120 秒 未收到上报即发送告警。
+```bash
+curl -sL https://你的Worker域名/你的后台路径/install.sh | bash -s 节点ID 节点独立上报密钥
+```
 
-    静默处理：告警状态存储在数据库中，节点掉线只会发一次通知，直到它重新上线后再次掉线才会触发新告警。
----
+不要手动把 `API_SECRET` 当作节点上报密钥使用。
 
-## ⚙️ 探针卸载 (Agent)
+### Alpine 安装依赖
 
-如果需要从被控端 VPS 卸载探针服务，请在 VPS 终端执行以下命令：
+Alpine 默认没有 systemd，脚本会自动使用 OpenRC。
+
+建议 Alpine 安装前先执行：
+
+```bash
+apk add --no-cache bash curl procps iproute2 coreutils
+```
+
+然后再执行后台复制的安装命令。
+
+### 卸载探针
+
+后台每个节点都会显示对应的卸载命令，直接复制到 VPS 执行即可。
+
+卸载命令同时兼容：
+
+- systemd。
+- Alpine/OpenRC。
+
+它会清理：
+
+- `/etc/systemd/system/cf-probe.service`
+- `/etc/init.d/cf-probe`
+- `/usr/local/bin/cf-probe.sh`
+- `/run/cf-probe.pid`
+- `/var/log/cf-probe.log`
+- `/var/log/cf-probe.err`
+
+如果你只需要 systemd 手动卸载，也可以执行：
+
 ```bash
 systemctl stop cf-probe.service
 systemctl disable cf-probe.service
-rm /etc/systemd/system/cf-probe.service
-rm /usr/local/bin/cf-probe.sh
+rm -f /etc/systemd/system/cf-probe.service
+rm -f /usr/local/bin/cf-probe.sh
 systemctl daemon-reload
 ```
 
-## 📄 License
+## 后台设置说明
+
+### 公开访问
+
+前台是否公开主要由环境变量 `IS_PUBLIC` 控制。
+
+建议：
+
+```text
+IS_PUBLIC=false
+```
+
+如果设置为 `false`，访问前台也需要输入 Basic Auth。
+
+### 前台展示开关
+
+后台可以控制这些信息是否在前台显示：
+
+- 价格。
+- 到期时间。
+- 带宽。
+- 流量配额。
+
+### 自定义背景图
+
+支持两种方式：
+
+- 上传本地图片，自动转为 Base64。
+- 填写 `http` 或 `https` 图片 URL。
+
+示例随机背景接口：
+
+```text
+https://imgapi.cn/api.php?fl=dongman&=4k
+```
+
+### Telegram 离线通知
+
+配置步骤：
+
+1. 在 Telegram 找 `@BotFather` 创建机器人并获取 Bot Token。
+2. 在 Telegram 找 `@userinfobot` 获取 Chat ID。
+3. 登录探针后台。
+4. 在 Telegram 离线告警设置中填写 Bot Token 和 Chat ID。
+5. 将开启离线通知设置为启用。
+6. 保存全局设置。
+
+离线判断：
+
+- 节点超过 120 秒未上报，会触发离线通知。
+- 节点恢复后，会触发恢复通知。
+- 同一次离线状态只会通知一次，避免重复刷屏。
+
+## 常见问题
+
+### 前端为什么不再自动刷新
+
+旧版本首页有：
+
+```html
+<meta http-equiv="refresh" content="5">
+```
+
+会导致首页每 5 秒整页刷新。
+
+当前版本已删除整页刷新。
+
+详情页仍会每 3 秒局部请求 `/api/server` 更新图表，不会整页刷新。
+
+### 不打开页面还会消耗 Cloudflare 吗
+
+会。
+
+只要 VPS 上的 Agent 还在运行，它就会每 30 秒请求一次 Worker 的 `/update`，并写入 D1。
+
+页面访问只会增加额外读请求，不影响 Agent 自身上报。
+
+### 为什么设置了 ADMIN_PATH 但后台路径没变
+
+确认已经重新部署 Worker。
+
+`ADMIN_PATH` 支持两种写法：
+
+```text
+ADMIN_PATH=myadmin
+ADMIN_PATH=/myadmin
+```
+
+两者都会生效为：
+
+```text
+/myadmin
+```
+
+如果线上仍能访问旧的 `/admin`，通常是代码未重新部署，或 Worker 仍在运行旧版本。
+
+### Alpine 报 systemctl 不存在怎么办
+
+当前版本已支持 OpenRC。
+
+如果是旧版本报错：
+
+```text
+systemctl: command not found
+/etc/systemd/system/cf-probe.service: No such file or directory
+```
+
+请重新部署最新 Worker，然后重新复制后台安装命令。
+
+Alpine 建议先安装依赖：
+
+```bash
+apk add --no-cache bash curl procps iproute2 coreutils
+```
+
+## 安全建议
+
+- `API_SECRET` 使用强随机密码，不要使用简单密码。
+- `ADMIN_PATH` 不要使用默认 `/admin`。
+- `IS_PUBLIC` 建议设为 `false`。
+- 不要公开后台路径。
+- 不要把安装命令发给不可信的人。
+- 如果怀疑泄露，删除节点后重新添加，生成新的节点上报密钥。
+- 如果 Telegram Bot Token 泄露，请在 BotFather 重新生成。
+
+## License
+
 MIT License
