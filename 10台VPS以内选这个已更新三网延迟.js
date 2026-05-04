@@ -22,7 +22,7 @@ export default {
             swap_used TEXT, disk_total TEXT, disk_used TEXT, processes TEXT, tcp_conn TEXT, udp_conn TEXT, 
             country TEXT, ip_v4 TEXT, ip_v6 TEXT,
             server_group TEXT DEFAULT '默认分组', price TEXT DEFAULT '', expire_date TEXT DEFAULT '', 
-            bandwidth TEXT DEFAULT '', traffic_limit TEXT DEFAULT ''
+            bandwidth TEXT DEFAULT '', traffic_limit TEXT DEFAULT '', report_secret TEXT DEFAULT ''
           )
         `).run();
 
@@ -33,7 +33,8 @@ export default {
         // 需要确保存在的增强功能字段
         const newCols = {
           ping_ct: "TEXT DEFAULT '0'", ping_cu: "TEXT DEFAULT '0'", ping_cm: "TEXT DEFAULT '0'", ping_bd: "TEXT DEFAULT '0'",
-          monthly_rx: "TEXT DEFAULT '0'", monthly_tx: "TEXT DEFAULT '0'", last_rx: "TEXT DEFAULT '0'", last_tx: "TEXT DEFAULT '0'", reset_month: "TEXT DEFAULT ''"
+          monthly_rx: "TEXT DEFAULT '0'", monthly_tx: "TEXT DEFAULT '0'", last_rx: "TEXT DEFAULT '0'", last_tx: "TEXT DEFAULT '0'", reset_month: "TEXT DEFAULT ''",
+          report_secret: "TEXT DEFAULT ''"
         };
 
         // 遍历比对，缺少的自动 ALTER TABLE 追加
@@ -64,6 +65,38 @@ export default {
       return String.fromCodePoint(...countryCode.toUpperCase().split('').map(char => 127397 + char.charCodeAt()));
     };
 
+    const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    }[char]));
+
+    const escapeJsString = (value) => String(value ?? '').replace(/[\\'"\r\n<>&]/g, (char) => ({
+      '\\': '\\\\', "'": "\\'", '"': '\\"', '\r': '\\r', '\n': '\\n', '<': '\\x3C', '>': '\\x3E', '&': '\\x26'
+    }[char]));
+
+    const safePath = (value, fallback) => {
+      const rawPath = String(value || fallback || '').trim();
+      const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+      if (!path.startsWith('/') || path.includes('..') || /[?#\\\s]/.test(path)) return fallback;
+      return path.replace(/\/+$/, '') || fallback;
+    };
+
+    const safeUrl = (value) => {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      if (/^data:image\/(png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(raw)) return raw;
+      try {
+        const parsed = new URL(raw);
+        return ['https:', 'http:'].includes(parsed.protocol) ? raw : '';
+      } catch (e) {
+        return '';
+      }
+    };
+
+    const adminPath = safePath(env.ADMIN_PATH, '/admin');
+    const adminApiPath = `${adminPath}/api`;
+    const installPath = `${adminPath}/install.sh`;
+    const publicFromEnv = typeof env.IS_PUBLIC !== 'undefined' ? String(env.IS_PUBLIC).toLowerCase() === 'true' : null;
+
     // ==========================================
     // 1. 认证机制与全局设置加载
     // ==========================================
@@ -87,7 +120,7 @@ export default {
       admin_title: '⚙️ 探针管理后台',
       theme: 'theme1', 
       custom_bg: '',
-      is_public: 'true',
+      is_public: 'false',
       show_price: 'true',
       show_expire: 'true',
       show_bw: 'true',
@@ -104,6 +137,10 @@ export default {
         results.forEach(r => sys[r.key] = r.value);
       }
     } catch (e) {}
+
+    if (publicFromEnv !== null) sys.is_public = publicFromEnv ? 'true' : 'false';
+    const customBgUrl = safeUrl(sys.custom_bg);
+    const activeTheme = ['theme1', 'theme2', 'theme3', 'theme4', 'theme5'].includes(sys.theme) ? sys.theme : 'theme1';
 
     // ==========================================
     // Telegram 离线检测与通知机制
@@ -203,8 +240,8 @@ export default {
       .chart-full { grid-column: 1 / -1; }
       .chart-full canvas { max-height: 250px !important; }
 
-      ${sys.custom_bg ? `
-        body { background: url('${sys.custom_bg}') no-repeat center center fixed !important; background-size: cover !important; }
+      ${customBgUrl ? `
+        body { background: url('${escapeHtml(customBgUrl)}') no-repeat center center fixed !important; background-size: cover !important; }
         .vps-card, .global-stats, .header-card, .chart-card { background: rgba(255, 255, 255, 0.4) !important; backdrop-filter: blur(12px) !important; -webkit-backdrop-filter: blur(12px) !important; border: 1px solid rgba(255, 255, 255, 0.6) !important; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1) !important; color: #111 !important; }
         .vps-card:hover { background: rgba(255, 255, 255, 0.6) !important; transform: translateY(-3px); }
         .group-header { color: #fff !important; text-shadow: 0 2px 5px rgba(0,0,0,0.6) !important; border-left-color: #fff !important; }
@@ -215,9 +252,9 @@ export default {
     `;
 
     // ==========================================
-    // 后台管理 API (/admin/api)
+    // 后台管理 API (默认 /admin/api，可通过 ADMIN_PATH 环境变量调整)
     // ==========================================
-    if (request.method === 'POST' && url.pathname === '/admin/api') {
+    if (request.method === 'POST' && url.pathname === adminApiPath) {
       if (!checkAuth(request)) return authResponse(sys.admin_title);
       try {
         const data = await request.json();
@@ -230,12 +267,13 @@ export default {
         } 
         else if (data.action === 'add') {
           const id = crypto.randomUUID();
+          const reportSecret = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
           const name = data.name || 'New Server';
           await env.DB.prepare(`
             INSERT INTO servers 
-            (id, name, cpu, ram, disk, load_avg, uptime, last_updated, ram_total, net_rx, net_tx, net_in_speed, net_out_speed, os, cpu_info, arch, boot_time, ram_used, swap_total, swap_used, disk_total, disk_used, processes, tcp_conn, udp_conn, country, ip_v4, ip_v6, server_group, price, expire_date, bandwidth, traffic_limit, ping_ct, ping_cu, ping_cm, ping_bd, monthly_rx, monthly_tx, last_rx, last_tx, reset_month) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(id, name, '0', '0', '0', '0', '0', 0, '0', '0', '0', '0', '0', '', '', '', '', '0', '0', '0', '0', '0', '0', '0', '0', '', '0', '0', '默认分组', '免费', '', '', '', '0', '0', '0', '0', '0', '0', '0', '0', '').run();
+            (id, name, cpu, ram, disk, load_avg, uptime, last_updated, ram_total, net_rx, net_tx, net_in_speed, net_out_speed, os, cpu_info, arch, boot_time, ram_used, swap_total, swap_used, disk_total, disk_used, processes, tcp_conn, udp_conn, country, ip_v4, ip_v6, server_group, price, expire_date, bandwidth, traffic_limit, ping_ct, ping_cu, ping_cm, ping_bd, monthly_rx, monthly_tx, last_rx, last_tx, reset_month, report_secret) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(id, name, '0', '0', '0', '0', '0', 0, '0', '0', '0', '0', '0', '', '', '', '', '0', '0', '0', '0', '0', '0', '0', '0', '', '0', '0', '默认分组', '免费', '', '', '', '0', '0', '0', '0', '0', '0', '0', '0', '', reportSecret).run();
           return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
         } 
         else if (data.action === 'delete') {
@@ -254,32 +292,54 @@ export default {
     }
 
     // ==========================================
-    // 后台管理 UI (/admin)
+    // 后台管理 UI (默认 /admin，可通过 ADMIN_PATH 环境变量调整)
     // ==========================================
-    if (request.method === 'GET' && url.pathname === '/admin') {
+    if (request.method === 'GET' && url.pathname === adminPath) {
       if (!checkAuth(request)) return authResponse(sys.admin_title);
       
-      const { results } = await env.DB.prepare('SELECT id, name, last_updated, server_group, price, expire_date, bandwidth, traffic_limit FROM servers').all();
+      const { results } = await env.DB.prepare('SELECT id, name, last_updated, server_group, price, expire_date, bandwidth, traffic_limit, report_secret FROM servers').all();
       const now = Date.now();
       
       let trs = '';
       if (results && results.length > 0) {
         for (const s of results) {
+          if (!s.report_secret) {
+            s.report_secret = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+            await env.DB.prepare('UPDATE servers SET report_secret = ? WHERE id = ?').bind(s.report_secret, s.id).run();
+          }
           const isOnline = (now - s.last_updated) < 30000;
           const status = isOnline ? '<span style="color:green; font-weight:bold;">在线</span>' : '<span style="color:red; font-weight:bold;">离线</span>';
           const cmdApp = "cur" + "l";
-          const cmd = `${cmdApp} -sL ${host}/install.sh | bash -s ${s.id} ${env.API_SECRET}`;
+          const cmd = `${cmdApp} -sL ${host}${installPath} | bash -s ${s.id} ${s.report_secret}`;
+          const uninstallCmd = "if command -v systemctl >/dev/null 2>&1; then systemctl stop cf-probe.service 2>/dev/null; systemctl disable cf-probe.service 2>/dev/null; rm -f /etc/systemd/system/cf-probe.service; systemctl daemon-reload 2>/dev/null; fi; if command -v rc-service >/dev/null 2>&1; then rc-service cf-probe stop 2>/dev/null; fi; if command -v rc-update >/dev/null 2>&1; then rc-update del cf-probe default 2>/dev/null; fi; rm -f /etc/init.d/cf-probe /usr/local/bin/cf-probe.sh /run/cf-probe.pid /var/log/cf-probe.log /var/log/cf-probe.err; pkill -f cf-probe.sh 2>/dev/null; echo '✅ 探针卸载完成'";
+          const safeId = escapeHtml(s.id);
+          const safeJsId = escapeJsString(s.id);
+          const safeGroup = escapeHtml(s.server_group || '默认分组');
+          const safeCmd = escapeHtml(cmd);
+          const safeUninstallCmd = escapeHtml(uninstallCmd);
           
           trs += `
             <tr>
-              <td>${s.name}</td>
-              <td>${s.server_group || '默认分组'}</td>
+              <td>${escapeHtml(s.name)}</td>
+              <td>${safeGroup}</td>
               <td>${status}</td>
+              <td class="cmd-cell">
+                <div class="cmd-row" style="margin-bottom:6px;">
+                  <span class="cmd-label">安装命令</span>
+                  <input class="cmd-input" type="text" readonly value="${safeCmd}" id="cmd-${safeId}">
+                  <button onclick="copyCmd('cmd-${safeJsId}', '✅ 安装命令已复制！')" class="btn btn-green">复制安装</button>
+                </div>
+                <div class="cmd-row">
+                  <span class="cmd-label">卸载命令</span>
+                  <input class="cmd-input" type="text" readonly value="${safeUninstallCmd}" id="uninstall-cmd-${safeId}">
+                  <button onclick="copyCmd('uninstall-cmd-${safeJsId}', '✅ 卸载命令已复制！')" class="btn btn-gray">复制卸载</button>
+                </div>
+              </td>
               <td>
-                <input type="text" readonly value="${cmd}" style="width:280px; padding:6px; margin-right:5px; border:1px solid #ccc; border-radius:4px;" id="cmd-${s.id}">
-                <button onclick="copyCmd('${s.id}')" class="btn btn-green">复制命令</button>
-                <button onclick="openEditModal('${s.id}', '${s.server_group||''}', '${s.price||''}', '${s.expire_date||''}', '${s.bandwidth||''}', '${s.traffic_limit||''}')" class="btn btn-blue">✏️ 编辑</button>
-                <button onclick="deleteServer('${s.id}')" class="btn btn-red">🗑️ 删除</button>
+                <div style="display:flex; flex-direction:column; align-items:center; gap:8px; white-space:nowrap;">
+                  <button onclick="openEditModal('${safeJsId}', '${escapeJsString(s.server_group || '')}', '${escapeJsString(s.price || '')}', '${escapeJsString(s.expire_date || '')}', '${escapeJsString(s.bandwidth || '')}', '${escapeJsString(s.traffic_limit || '')}')" class="btn btn-blue">✏️ 编辑</button>
+                  <button onclick="deleteServer('${safeJsId}')" class="btn btn-red">🗑️ 删除</button>
+                </div>
               </td>
             </tr>
           `;
@@ -290,17 +350,26 @@ export default {
       <html>
       <head>
         <meta charset="UTF-8">
-        <title>${sys.admin_title}</title>
+        <title>${escapeHtml(sys.admin_title)}</title>
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background: #f0f2f5; color: #333;}
           .card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); max-width: 1100px; margin: 0 auto 20px auto; }
           h2 { margin-top: 0; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; font-size: 20px;}
-          table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px; }
-          th, td { border: 1px solid #eee; padding: 12px; text-align: left; }
+          table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px; table-layout: fixed; }
+          th, td { border: 1px solid #eee; padding: 12px; text-align: center; vertical-align: middle; }
           th { background: #f8f9fa; }
           .btn { cursor: pointer; border-radius: 4px; font-size: 13px; transition: opacity 0.2s; border: none; padding: 6px 10px; color: white; margin-left: 5px; }
           .btn:hover { opacity: 0.8; }
           .btn-blue { background: #3b82f6; } .btn-green { background: #10b981; } .btn-red { background: #ef4444; } .btn-gray { background: #6b7280; }
+          .col-name { width: 80px; }
+          .col-group { width: 80px; }
+          .col-status { width: 80px; }
+          .col-actions { width: 80px; }
+          .cmd-cell { width: auto; text-align: left; }
+          .cmd-row { display: flex; align-items: center; gap: 6px; width: 100%; }
+          .cmd-label { flex: 0 0 70px; color: #666; font-size: 12px; }
+          .cmd-input { flex: 1 1 auto; min-width: 0; padding: 6px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+          .cmd-row .btn { flex: 0 0 auto; }
           .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
           .form-group { display: flex; flex-direction: column; margin-bottom: 15px; }
           .form-group label { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #555;}
@@ -331,20 +400,20 @@ export default {
               <div class="form-group">
                 <label>🖼️ 自定义背景图片 (上传或填URL，开启后强制全透明)</label>
                 <div style="display:flex; gap:8px;">
-                   <input type="text" id="cfg_custom_bg" value="${sys.custom_bg || ''}" placeholder="粘贴图片 URL 或 点击右侧按钮上传" style="flex:1;">
+                    <input type="text" id="cfg_custom_bg" value="${escapeHtml(customBgUrl)}" placeholder="粘贴图片 URL 或 点击右侧按钮上传" style="flex:1;">
                    <input type="file" id="bg_file" accept="image/*" style="display:none;" onchange="uploadBg(this)">
                    <button class="btn btn-gray" onclick="document.getElementById('bg_file').click()">📁 本地上传</button>
                 </div>
-                <img id="bg_preview" src="${sys.custom_bg || ''}" style="max-height: 120px; margin-top: 10px; border-radius: 6px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); display: ${sys.custom_bg ? 'block' : 'none'}; object-fit: cover;">
+                <img id="bg_preview" src="${escapeHtml(customBgUrl)}" style="max-height: 120px; margin-top: 10px; border-radius: 6px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); display: ${customBgUrl ? 'block' : 'none'}; object-fit: cover;">
                 <span style="font-size:12px; color:#888; margin-top:5px;">* 上传的图片会自动转码保存，建议小于 500KB 以保证加载速度。清除输入框并保存即可恢复纯色主题。</span>
               </div>
               <div class="form-group">
                 <label>前台看板标题</label>
-                <input type="text" id="cfg_site_title" value="${sys.site_title}">
+                 <input type="text" id="cfg_site_title" value="${escapeHtml(sys.site_title)}">
               </div>
               <div class="form-group">
                 <label>后台标签栏名称</label>
-                <input type="text" id="cfg_admin_title" value="${sys.admin_title}">
+                 <input type="text" id="cfg_admin_title" value="${escapeHtml(sys.admin_title)}">
               </div>
             </div>
             <div>
@@ -387,11 +456,11 @@ export default {
               </div>
               <div class="form-group">
                 <label>Bot Token</label>
-                <input type="text" id="cfg_tg_bot_token" value="${sys.tg_bot_token || ''}" placeholder="如: 12345678:ABCDEFG...">
+                <input type="text" id="cfg_tg_bot_token" value="${escapeHtml(sys.tg_bot_token || '')}" placeholder="如: 12345678:ABCDEFG...">
               </div>
               <div class="form-group">
                 <label>Chat ID</label>
-                <input type="text" id="cfg_tg_chat_id" value="${sys.tg_chat_id || ''}" placeholder="如: 123456789">
+                <input type="text" id="cfg_tg_chat_id" value="${escapeHtml(sys.tg_chat_id || '')}" placeholder="如: 123456789">
               </div>
 
             </div>
@@ -400,15 +469,15 @@ export default {
         </div>
 
         <div class="card">
-          <h2>${sys.admin_title} - 节点列表</h2>
+          <h2>${escapeHtml(sys.admin_title)} - 节点列表</h2>
           <div style="margin-bottom: 15px;">
             <input type="text" id="newName" placeholder="输入新服务器名称" style="padding: 8px; width: 200px; border:1px solid #ccc; border-radius:4px;">
             <button onclick="addServer()" class="btn btn-blue" style="padding: 9px 15px;">+ 添加新服务器</button>
             <a href="/" style="float: right; margin-top: 8px; color: #3b82f6; text-decoration: none; font-weight:bold;">👉 前往大盘预览</a>
           </div>
           <table>
-            <tr><th>节点名称</th><th>分组</th><th>在线状态</th><th>操作</th></tr>
-            ${trs || '<tr><td colspan="4" style="text-align:center; padding: 30px; color:#666;">暂无服务器，请在上方添加</td></tr>'}
+            <tr><th class="col-name">节点名称</th><th class="col-group">分组</th><th class="col-status">在线状态</th><th>安装/卸载</th><th class="col-actions">操作</th></tr>
+            ${trs || '<tr><td colspan="5" style="text-align:center; padding: 30px; color:#666;">暂无服务器，请在上方添加</td></tr>'}
           </table>
         </div>
 
@@ -465,24 +534,24 @@ export default {
                 tg_chat_id: document.getElementById('cfg_tg_chat_id').value
               }
             };
-            const res = await fetch('/admin/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            const res = await fetch('${adminApiPath}', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
             if (res.ok) { alert('✅ 设置已保存！'); location.reload(); } else alert('保存失败');
           }
           async function addServer() {
             const name = document.getElementById('newName').value;
             if (!name) return alert('请输入名称');
-            const res = await fetch('/admin/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add', name }) });
+            const res = await fetch('${adminApiPath}', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add', name }) });
             if (res.ok) location.reload(); else alert('添加失败');
           }
           async function deleteServer(id) {
             if (!confirm('确定要删除这个节点吗？')) return;
-            const res = await fetch('/admin/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete', id }) });
+            const res = await fetch('${adminApiPath}', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete', id }) });
             if (res.ok) location.reload(); else alert('删除失败');
           }
-          function copyCmd(id) {
-            const input = document.getElementById('cmd-' + id);
+          function copyCmd(inputId, message) {
+            const input = document.getElementById(inputId);
             input.select(); document.execCommand('copy');
-            alert('✅ 一键命令已复制！');
+            alert(message || '✅ 命令已复制！');
           }
           function openEditModal(id, group, price, expire, bw, traffic) {
             document.getElementById('editId').value = id;
@@ -501,7 +570,7 @@ export default {
               expire_date: document.getElementById('editExpire').value, bandwidth: document.getElementById('editBandwidth').value,
               traffic_limit: document.getElementById('editTraffic').value
             };
-            const res = await fetch('/admin/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            const res = await fetch('${adminApiPath}', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
             if (res.ok) location.reload(); else alert('保存失败');
           }
         </script>
@@ -513,9 +582,8 @@ export default {
     // ==========================================
     // 一键安装脚本 (/install.sh)
     // ==========================================
-    if (request.method === 'GET' && url.pathname === '/install.sh') {
+    if (request.method === 'GET' && url.pathname === installPath) {
       const sh_bin = "/bin" + "/bash";
-      const sh_etc = "/etc/" + "systemd/" + "system";
       const sh_sys = "system" + "ctl";
       const sh_curl = "cur" + "l";
 
@@ -527,7 +595,23 @@ WORKER_URL="${host}/update"
 if [ -z "$SERVER_ID" ] || [ -z "$SECRET" ]; then echo "错误: 缺少参数。"; exit 1; fi
 echo "开始安装全面增强版 CF Probe Agent..."
 
-${sh_sys} stop cf-probe.service 2>/dev/null
+if [ ! -x "${sh_bin}" ]; then
+  echo "错误: 未找到 ${sh_bin}。Alpine 请先执行: apk add --no-cache bash curl procps iproute2 coreutils"
+  exit 1
+fi
+
+if command -v ${sh_curl} >/dev/null 2>&1; then
+  :
+else
+  echo "错误: 未找到 curl。Alpine 请先执行: apk add --no-cache curl"
+  exit 1
+fi
+
+if command -v ${sh_sys} >/dev/null 2>&1; then
+  ${sh_sys} stop cf-probe.service 2>/dev/null
+elif command -v rc-service >/dev/null 2>&1; then
+  rc-service cf-probe stop 2>/dev/null
+fi
 pkill -f cf-probe.sh 2>/dev/null
 
 cat << 'EOF' > /usr/local/bin/cf-probe.sh
@@ -560,12 +644,12 @@ IPV4="0"; IPV6="0"
 PING_CT="0"; PING_CU="0"; PING_CM="0"; PING_BD="0"
 
 while true; do
-  if [ \$((LOOP_COUNT % 60)) -eq 0 ]; then
+  if [ \$((LOOP_COUNT % 10)) -eq 0 ]; then
     ${sh_curl} -s -4 -m 3 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "ip=" && IPV4="1" || IPV4="0"
     ${sh_curl} -s -6 -m 3 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "ip=" && IPV6="1" || IPV6="0"
   fi
   
-  if [ \$((LOOP_COUNT % 6)) -eq 0 ]; then
+  if [ \$((LOOP_COUNT % 2)) -eq 0 ]; then
     PING_CT=\$(get_http_ping "\${CT_NODES[\$RANDOM % \${#CT_NODES[@]}]}")
     PING_CU=\$(get_http_ping "\${CU_NODES[\$RANDOM % \${#CU_NODES[@]}]}")
     PING_CM=\$(get_http_ping "\${CM_NODES[\$RANDOM % \${#CM_NODES[@]}]}")
@@ -616,20 +700,21 @@ while true; do
   if [ -z "\$RX_NOW" ]; then RX_NOW=0; fi
   if [ -z "\$TX_NOW" ]; then TX_NOW=0; fi
 
-  RX_SPEED=\$(((RX_NOW - RX_PREV) / 5))
-  TX_SPEED=\$(((TX_NOW - TX_PREV) / 5))
+  RX_SPEED=\$(((RX_NOW - RX_PREV) / 30))
+  TX_SPEED=\$(((TX_NOW - TX_PREV) / 30))
   RX_PREV=\$RX_NOW; TX_PREV=\$TX_NOW
   
   PAYLOAD="{\\"id\\": \\"\$SERVER_ID\\", \\"secret\\": \\"\$SECRET\\", \\"metrics\\": { \\"cpu\\": \\"\$CPU\\", \\"ram\\": \\"\$RAM\\", \\"ram_total\\": \\"\$RAM_TOTAL\\", \\"ram_used\\": \\"\$RAM_USED\\", \\"swap_total\\": \\"\$SWAP_TOTAL\\", \\"swap_used\\": \\"\$SWAP_USED\\", \\"disk\\": \\"\$DISK\\", \\"disk_total\\": \\"\$DISK_TOTAL\\", \\"disk_used\\": \\"\$DISK_USED\\", \\"load\\": \\"\$LOAD\\", \\"uptime\\": \\"\$UPTIME\\", \\"boot_time\\": \\"\$BOOT_TIME\\", \\"net_rx\\": \\"\$RX_NOW\\", \\"net_tx\\": \\"\$TX_NOW\\", \\"net_in_speed\\": \\"\$RX_SPEED\\", \\"net_out_speed\\": \\"\$TX_SPEED\\", \\"os\\": \\"\$OS\\", \\"arch\\": \\"\$ARCH\\", \\"cpu_info\\": \\"\$CPU_INFO\\", \\"processes\\": \\"\$PROCESSES\\", \\"tcp_conn\\": \\"\$TCP_CONN\\", \\"udp_conn\\": \\"\$UDP_CONN\\", \\"ip_v4\\": \\"\$IPV4\\", \\"ip_v6\\": \\"\$IPV6\\", \\"ping_ct\\": \\"\$PING_CT\\", \\"ping_cu\\": \\"\$PING_CU\\", \\"ping_cm\\": \\"\$PING_CM\\", \\"ping_bd\\": \\"\$PING_BD\\" }}"
   
   ${sh_curl} -s -X POST -H "Content-Type: application/json" -d "\$PAYLOAD" "\$WORKER_URL" > /dev/null
-  sleep 5
+  sleep 30
 done
 EOF
 
 chmod +x /usr/local/bin/cf-probe.sh
 
-cat << EOF > ${sh_etc}/cf-probe.service
+if command -v ${sh_sys} >/dev/null 2>&1 && [ -d /etc/systemd/system ]; then
+cat << EOF > /etc/systemd/system/cf-probe.service
 [Unit]
 Description=Cloudflare Worker Probe Agent
 After=network.target
@@ -643,9 +728,34 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-${sh_sys} daemon-reload
-${sh_sys} enable cf-probe.service
-${sh_sys} restart cf-probe.service
+  ${sh_sys} daemon-reload
+  ${sh_sys} enable cf-probe.service
+  ${sh_sys} restart cf-probe.service
+elif command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1 && [ -d /etc/init.d ]; then
+cat << EOF > /etc/init.d/cf-probe
+#!/sbin/openrc-run
+name="CF Probe Agent"
+description="Cloudflare Worker Probe Agent"
+command="/usr/local/bin/cf-probe.sh"
+command_args="$SERVER_ID $SECRET $WORKER_URL"
+command_background="yes"
+pidfile="/run/cf-probe.pid"
+output_log="/var/log/cf-probe.log"
+error_log="/var/log/cf-probe.err"
+depend() {
+  need net
+}
+EOF
+
+  chmod +x /etc/init.d/cf-probe
+  rc-update add cf-probe default
+  rc-service cf-probe restart
+else
+  echo "错误: 未检测到 systemd 或 OpenRC，无法注册开机自启服务。"
+  echo "Agent 脚本已写入 /usr/local/bin/cf-probe.sh，可手动运行:"
+  echo "/usr/local/bin/cf-probe.sh $SERVER_ID $SECRET $WORKER_URL"
+  exit 1
+fi
 
 echo "✅ 探针安装成功！"
 `;
@@ -660,13 +770,12 @@ echo "✅ 探针安装成功！"
         const data = await request.json();
         const { id, secret, metrics } = data;
 
-        if (secret !== env.API_SECRET) return new Response('Unauthorized', { status: 401 });
-
         let countryCode = request.cf && request.cf.country ? request.cf.country : 'XX';
         if (countryCode.toUpperCase() === 'TW') countryCode = 'CN';
 
-        const serverExists = await env.DB.prepare('SELECT * FROM servers WHERE id = ?').bind(id).first();
+        const serverExists = await env.DB.prepare('SELECT monthly_rx, monthly_tx, last_rx, last_tx, reset_month, report_secret FROM servers WHERE id = ?').bind(id).first();
         if (!serverExists) return new Response('Server not found', { status: 404 });
+        if (!serverExists.report_secret || secret !== serverExists.report_secret) return new Response('Unauthorized', { status: 401 });
 
         // 流量累加与每月重置判定逻辑
         const nowTime = new Date();
@@ -743,7 +852,8 @@ echo "✅ 探针安装成功！"
       
       const id = url.searchParams.get('id');
       if (!id) return new Response('Miss ID', { status: 400 });
-      const server = await env.DB.prepare('SELECT * FROM servers WHERE id = ?').bind(id).first();
+      const apiFields = 'id, name, cpu, ram, disk, load_avg, uptime, last_updated, ram_total, net_rx, net_tx, net_in_speed, net_out_speed, os, cpu_info, arch, boot_time, ram_used, swap_total, swap_used, disk_total, disk_used, processes, tcp_conn, udp_conn, country, ip_v4, ip_v6, ping_ct, ping_cu, ping_cm, ping_bd, monthly_rx, monthly_tx';
+      const server = await env.DB.prepare(`SELECT ${apiFields} FROM servers WHERE id = ?`).bind(id).first();
       if (!server) return new Response('Not Found', { status: 404 });
       return new Response(JSON.stringify(server), { headers: { 'Content-Type': 'application/json' } });
     }
@@ -759,7 +869,7 @@ echo "✅ 探针安装成功！"
       const viewId = url.searchParams.get('id');
 
       if (viewId) {
-        const server = await env.DB.prepare('SELECT * FROM servers WHERE id = ?').bind(viewId).first();
+        const server = await env.DB.prepare('SELECT id, name FROM servers WHERE id = ?').bind(viewId).first();
         if (!server) return new Response('Server not found', { status: 404 });
         
         const rxField = sys.auto_reset_traffic === 'true' ? 'monthly_rx' : 'net_rx';
@@ -770,7 +880,7 @@ echo "✅ 探针安装成功！"
         <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>${server.name} - ${sys.site_title}</title>
+          <title>${escapeHtml(server.name)} - ${escapeHtml(sys.site_title)}</title>
           <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
           <style>
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f9fafb; color: #333; margin: 0; padding: 20px; }
@@ -792,12 +902,12 @@ echo "✅ 探针安装成功！"
             ${themeStyles}
           </style>
         </head>
-        <body class="${sys.theme || 'theme1'}">
+        <body class="${activeTheme}">
           <div class="container">
             <a href="/" class="back-btn">⬅ 返回大盘</a>
             <div class="header-card">
               <div class="title-row">
-                <h2><span id="head-flag"></span> ${server.name}</h2>
+                <h2><span id="head-flag"></span> ${escapeHtml(server.name)}</h2>
                 <span class="status-badge" id="head-status">在线</span>
               </div>
               <div class="info-grid">
@@ -892,7 +1002,8 @@ echo "✅ 探针安装成功！"
       // ----------------------------------------
       // 大盘聚合卡片页
       // ----------------------------------------
-      const { results } = await env.DB.prepare('SELECT * FROM servers').all();
+      const listFields = 'id, name, cpu, ram, disk, last_updated, net_rx, net_tx, net_in_speed, net_out_speed, country, ip_v4, ip_v6, server_group, price, expire_date, bandwidth, traffic_limit, ping_ct, ping_cu, ping_cm, ping_bd, monthly_rx, monthly_tx';
+      const { results } = await env.DB.prepare(`SELECT ${listFields} FROM servers`).all();
       const now = Date.now();
 
       let globalOnline = 0; let globalOffline = 0;
@@ -930,7 +1041,7 @@ echo "✅ 探针安装成功！"
         contentHtml = '<p style="text-align:center; width: 100%; color:#888;">暂无服务器，请在后台添加</p>';
       } else {
         for (const [grpName, grpServers] of Object.entries(groups)) {
-          contentHtml += `<div class="group-header">${grpName}</div><div class="grid-container">`;
+          contentHtml += `<div class="group-header">${escapeHtml(grpName)}</div><div class="grid-container">`;
           for (const server of grpServers) {
             const isOnline = (now - server.last_updated) < 30000;
             const statusColor = isOnline ? '#10b981' : '#ef4444'; 
@@ -943,7 +1054,7 @@ echo "✅ 探针安装成功！"
             
             let metaHtml = '';
             if (sys.show_price === 'true') {
-              metaHtml += `<div class="card-meta" style="margin-top:8px;">价格: ${server.price || '免费'}</div>`;
+              metaHtml += `<div class="card-meta" style="margin-top:8px;">价格: ${escapeHtml(server.price || '免费')}</div>`;
             }
             if (sys.show_expire === 'true') {
               let expireText = '永久';
@@ -958,19 +1069,19 @@ echo "✅ 探针安装成功！"
             }
 
             let badgesHtml = '';
-            if (sys.show_bw === 'true' && server.bandwidth) badgesHtml += `<span class="badge badge-bw">${server.bandwidth}</span>`;
-            if (sys.show_tf === 'true' && server.traffic_limit) badgesHtml += `<span class="badge badge-tf">${server.traffic_limit}</span>`;
+            if (sys.show_bw === 'true' && server.bandwidth) badgesHtml += `<span class="badge badge-bw">${escapeHtml(server.bandwidth)}</span>`;
+            if (sys.show_tf === 'true' && server.traffic_limit) badgesHtml += `<span class="badge badge-tf">${escapeHtml(server.traffic_limit)}</span>`;
             if (server.ip_v4 === '1') badgesHtml += `<span class="badge badge-v4">IPv4</span>`;
             if (server.ip_v6 === '1') badgesHtml += `<span class="badge badge-v6">IPv6</span>`;
 
             const pingHtml = `<div class="ping-box"><span>电信 <span style="color:${getColor(server.ping_ct)}; font-weight:bold;">${server.ping_ct === '0' ? '超时' : server.ping_ct + 'ms'}</span></span><span>联通 <span style="color:${getColor(server.ping_cu)}; font-weight:bold;">${server.ping_cu === '0' ? '超时' : server.ping_cu + 'ms'}</span></span><span>移动 <span style="color:${getColor(server.ping_cm)}; font-weight:bold;">${server.ping_cm === '0' ? '超时' : server.ping_cm + 'ms'}</span></span><span>字节 <span style="color:${getColor(server.ping_bd)}; font-weight:bold;">${server.ping_bd === '0' ? '超时' : server.ping_bd + 'ms'}</span></span></div>`;
 
             contentHtml += `
-              <a href="/?id=${server.id}" class="vps-card">
+              <a href="/?id=${encodeURIComponent(server.id)}" class="vps-card">
                 <div class="card-left">
                   <div class="card-title">
                     <div class="status-dot" style="background:${statusColor};"></div>
-                    ${flagHtml} <span style="font-size:15px;" class="card-title-text">${server.name}</span>
+                    ${flagHtml} <span style="font-size:15px;" class="card-title-text">${escapeHtml(server.name)}</span>
                   </div>
                   ${metaHtml}
                   <div class="card-badges">${badgesHtml}</div>
@@ -996,7 +1107,7 @@ echo "✅ 探针安装成功！"
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${sys.site_title}</title>
+        <title>${escapeHtml(sys.site_title)}</title>
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f4f5f7; color: #333; margin: 0; padding: 20px; }
           .container { max-width: 1200px; margin: 0 auto; }
@@ -1024,17 +1135,14 @@ echo "✅ 探针安装成功！"
           .stat-bar { width: 100%; height: 3px; background: #e5e7eb; border-radius: 2px; overflow: hidden; }
           .stat-bar > div { height: 100%; background: #3b82f6; border-radius: 2px; }
           .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-          .admin-btn { padding: 8px 16px; background: #3b82f6; color: white; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight:bold; }
           @media (max-width: 600px) { .grid-container { grid-template-columns: 1fr; } .vps-card { flex-direction: column; } .card-right { padding-left: 0; border-left: none; border-top: 1px solid #f0f0f0; margin-top: 15px; padding-top: 15px; } }
           ${themeStyles}
         </style>
-        <meta http-equiv="refresh" content="5">
       </head>
-      <body class="${sys.theme || 'theme1'}">
+      <body class="${activeTheme}">
         <div class="container">
           <div class="header">
-            <h1 style="margin:0;">${sys.site_title}</h1>
-            <a href="/admin" class="admin-btn">${sys.admin_title}</a>
+            <h1 style="margin:0;">${escapeHtml(sys.site_title)}</h1>
           </div>
           <div class="global-stats">
             <div class="g-item"><div class="g-label">服务器总数</div><div class="g-val">${results.length}</div><div class="g-sub">在线 <span style="color:#10b981">${globalOnline}</span> | 离线 <span style="color:#ef4444">${globalOffline}</span></div></div>
